@@ -104,7 +104,8 @@ CREATE TABLE users (
     email_verified  BOOLEAN NOT NULL DEFAULT FALSE,
     last_login_at   TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ              -- Soft Delete (NULL = chưa xóa)
 );
 
 CREATE INDEX idx_users_email ON users(email);
@@ -159,13 +160,19 @@ CREATE TABLE courses (
                     CHECK (status IN ('draft', 'published', 'archived')),
     max_students    INTEGER,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ              -- Soft Delete (NULL = chưa xóa)
 );
 
 CREATE INDEX idx_courses_teacher ON courses(teacher_id);
 CREATE INDEX idx_courses_category ON courses(category_id);
 CREATE INDEX idx_courses_status ON courses(status);
 CREATE INDEX idx_courses_slug ON courses(slug);
+
+-- Full-text search tiếng Việt (GIN + unaccent)
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE INDEX idx_courses_search ON courses
+    USING GIN (to_tsvector('simple', unaccent(title || ' ' || COALESCE(description, ''))));
 ```
 
 | Cột | Mô tả |
@@ -420,6 +427,7 @@ CREATE TABLE learning_progress (
                     CHECK (status IN ('not_started', 'in_progress', 'completed')),
     progress_pct    DECIMAL(5,2) NOT NULL DEFAULT 0.00,
     time_spent_sec  INTEGER NOT NULL DEFAULT 0,     -- Tổng thời gian học (giây)
+    scorm_data      JSONB,                           -- Dữ liệu SCORM (nếu bài học là SCORM)
     completed_at    TIMESTAMPTZ,
     last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -432,6 +440,10 @@ CREATE INDEX idx_progress_student ON learning_progress(student_id);
 CREATE INDEX idx_progress_course ON learning_progress(course_id);
 CREATE INDEX idx_progress_student_course ON learning_progress(student_id, course_id);
 ```
+
+| Cột đặc biệt | Mô tả |
+|---|---|
+| `scorm_data` | **JSONB** lưu dữ liệu tương tác SCORM: `cmi.core.lesson_status`, `cmi.core.score.raw`, `cmi.suspend_data`... Gộp chung vào `learning_progress` thay vì tạo bảng riêng — vì SCORM data gắn chặt với tiến độ học và có cấu trúc linh hoạt |
 
 > **Mối quan hệ với `course_enrollments.progress_pct`**: Khi `learning_progress` được cập nhật, hệ thống tính lại `progress_pct` tổng hợp trong `course_enrollments` = (số lessons completed / tổng lessons) × 100%.
 
@@ -657,6 +669,17 @@ Value:  JSON payload:
         }
 ```
 
+### 4.4 Password Reset Token
+
+```
+Key:    password_reset:{token_hash}
+Type:   String
+TTL:    900 seconds (15 phút)
+Value:  user_id (UUID của người dùng yêu cầu reset)
+```
+
+> **Không tạo bảng SQL** cho password reset — Redis tự cleanup khi token hết hạn.
+
 ---
 
 ## 5. MIGRATION STRATEGY (Alembic)
@@ -676,7 +699,8 @@ backend/
         ├── 005_create_quizzes.py
         ├── 006_create_progress_support.py
         ├── 007_create_badges.py
-        └── 008_create_system_configs.py
+        ├── 008_create_system_configs.py
+        └── 009_create_notifications.py
 ```
 
 ### 5.2 Quy tắc Migration
@@ -711,8 +735,42 @@ backend/
 | 15 | `badges` | 7 | → courses | Huy hiệu |
 | 16 | `user_badges` | 6 | → users, badges | Huy hiệu đã cấp |
 | 17 | `system_configs` | 7 | → users | Cấu hình runtime |
+| 18 | `notifications` | 9 | → users | Thông báo real-time |
 
-**Tổng: 17 bảng SQL + 1 Vector DB collection + 3 Redis key patterns**
+**Tổng: 18 bảng SQL + 1 Vector DB collection + 4 Redis key patterns**
+
+---
+
+## BẢNG MỚI: `notifications` — Thông báo
+
+Lưu tất cả thông báo để hiển thị trong giao diện (icon chuông) và đẩy qua WebSocket.
+
+```sql
+CREATE TABLE notifications (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type        VARCHAR(50) NOT NULL
+                CHECK (type IN (
+                    'meet_scheduled', 'material_ready', 'badge_earned',
+                    'quiz_graded', 'support_reply', 'system'
+                )),
+    title       VARCHAR(500) NOT NULL,
+    message     TEXT,
+    data        JSONB,                      -- Payload liên kết (course_id, meet_link...)
+    is_read     BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_notifications_user ON notifications(user_id);
+CREATE INDEX idx_notifications_user_read ON notifications(user_id, is_read);
+CREATE INDEX idx_notifications_created ON notifications(user_id, created_at DESC);
+```
+
+| Cột | Mô tả |
+|-----|-------|
+| `type` | Loại thông báo: `meet_scheduled`, `badge_earned`, `quiz_graded`... |
+| `data` | JSONB chứa metadata liên kết (ví dụ: `{"course_id": "...", "meet_link": "..."}`) |
+| `is_read` | Đánh dấu đã đọc / chưa đọc |
 
 ---
 

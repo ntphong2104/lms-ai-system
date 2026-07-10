@@ -20,6 +20,7 @@ graph TB
         API["⚙️ Backend API<br/>(FastAPI - Python)"]
         AUTH["🔐 Auth Middleware<br/>(JWT)"]
         RL["🛡️ Rate Limiter"]
+        WS["🔔 WebSocket<br/>(Notifications)"]
     end
 
     subgraph "AI ENGINE"
@@ -58,6 +59,9 @@ graph TB
     DOC_PROC -->|Read file| S3
 
     API -->|Upload file| S3
+
+    API -.->|Push notification| WS
+    WS -.->|Real-time event| FE
 
     style FE fill:#4f46e5,color:#fff
     style API fill:#0891b2,color:#fff
@@ -349,8 +353,14 @@ graph LR
 - **JWT**: Access Token (30 phút) + Refresh Token (7 ngày). Refresh Token bị blacklist khi logout
 - **RBAC**: Phân quyền theo role, kiểm tra ownership (teacher chỉ sửa khóa học của mình)
 - **Input Validation**: Dùng Pydantic models validate mọi input đầu vào
+- **File Upload Validation**: Kiểm tra MIME type + kích thước: PDF ≤ 10MB, Video ≤ 100MB, SCORM ≤ 30MB
 
-### 6.2 AI Guardrails
+### 6.2 Password Reset Flow
+
+- User yêu cầu reset → hệ thống sinh token ngẫu nhiên → lưu trên **Redis với TTL = 15 phút** → gửi email chứa link reset
+- **KHÔNG** tạo bảng `password_reset_tokens` trong PostgreSQL — Redis đủ đáp ứng và tự cleanup khi hết hạn
+
+### 6.3 AI Guardrails
 
 Hệ thống áp dụng **2 lớp kiểm soát** cho Trợ lý AI:
 
@@ -421,3 +431,86 @@ graph TB
 ---
 
 *Tài liệu tiếp theo: [03_database_schema.md](./03_database_schema.md) — Thiết kế chi tiết các bảng SQL và Vector DB.*
+
+---
+
+## 9. WEBSOCKET & THÔNG BÁO REAL-TIME
+
+### 9.1 Kiến trúc WebSocket
+
+```mermaid
+sequenceDiagram
+    actor SV as Học viên (Browser)
+    participant WS as WebSocket Server
+    participant API as Backend API
+    participant Redis as Redis Pub/Sub
+    participant PG as PostgreSQL
+
+    SV->>WS: Kết nối WebSocket + JWT
+    WS->>WS: Verify JWT, subscribe channel user:{user_id}
+
+    Note over API: Giảng viên hẹn lịch Meet...
+    API->>PG: Lưu notification vào DB
+    API->>Redis: PUBLISH channel user:{student_id}
+    Redis->>WS: Nhận message
+    WS->>SV: Push notification real-time (popup + chuông)
+```
+
+### 9.2 Các loại thông báo
+
+| Event | Người nhận | Trigger |
+|-------|-----------|--------|
+| `meet_scheduled` | Student | Giảng viên hẹn lịch Google Meet |
+| `material_ready` | Teacher | Tài liệu xử lý vector hóa xong |
+| `badge_earned` | Student | Đạt điều kiện nhận huy hiệu |
+| `quiz_graded` | Student | Bài thi được chấm xong |
+| `support_reply` | Student | Giảng viên phản hồi yêu cầu hỗ trợ |
+
+---
+
+## 10. ERROR HANDLING & LOGGING
+
+### 10.1 Error Response Format chuẩn
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "LMS-4001",
+    "message": "Bạn đã hết lượt chat AI hôm nay (50/50)",
+    "details": null
+  }
+}
+```
+
+### 10.2 Bảng Error Codes
+
+| Code | HTTP Status | Mô tả |
+|------|:-----------:|-------|
+| `LMS-4001` | 429 | Hết lượt chat AI trong ngày |
+| `LMS-4002` | 413 | File upload vượt giới hạn kích thước |
+| `LMS-4003` | 415 | MIME type không được hỗ trợ |
+| `LMS-4004` | 403 | Không có quyền truy cập resource |
+| `LMS-4005` | 404 | Resource không tồn tại |
+| `LMS-5001` | 502 | LLM API không phản hồi |
+| `LMS-5002` | 500 | Vector DB lỗi kết nối |
+| `LMS-5003` | 500 | Background worker xử lý thất bại |
+
+### 10.3 Logging Strategy
+
+- **Format**: Structured JSON logs (dễ parse, dễ tìm kiếm)
+- **Levels**: `DEBUG` (dev) → `INFO` (prod) → `WARNING` → `ERROR`
+- **Fields**: `timestamp`, `level`, `request_id`, `user_id`, `endpoint`, `message`, `duration_ms`
+- **Health Check**: `GET /health` — trả về trạng thái kết nối DB, Redis, Vector DB
+
+### 10.4 CORS Configuration
+
+```python
+# Chỉ cho phép frontend domain
+CORS_ORIGINS = [
+    "http://localhost:3000",        # Dev
+    "https://lms.yourdomain.com",   # Production
+]
+CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+CORS_HEADERS = ["Authorization", "Content-Type"]
+```
