@@ -51,6 +51,7 @@ Dưới đây là cách ánh xạ các yêu cầu thực hành trong đề cươ
     *   Tạo các chương mục, bài học nhỏ cho khóa học.
     *   Tải lên các định dạng học liệu: Video, tài liệu PDF, bài giảng tương tác chuẩn **SCORM**.
     *   **Giới hạn kích thước file upload:** PDF tối đa **10MB**, Video tối đa **100MB**, gói SCORM tối đa **30MB**.
+    *   **Bảo mật tài liệu:** Toàn bộ học liệu tải lên được lưu trữ bảo mật (Private S3). Hệ thống chỉ sinh liên kết truy cập tạm thời (Presigned URL) khi học viên truy cập bài học để chống rò rỉ bản quyền.
     *   **Xây dựng cơ sở tri thức cho AI:** Khi giảng viên tải tài liệu học tập (PDF/Text) lên, hệ thống sẽ tự động kích hoạt tiến trình vector hóa tài liệu này và lưu vào Vector Database để làm dữ liệu nền cho Trợ lý AI.
 *   **Hỗ trợ 1-1 qua Google Meet (On-demand Support):**
     *   Xem danh sách yêu cầu hỗ trợ từ học viên.
@@ -71,7 +72,7 @@ Dưới đây là cách ánh xạ các yêu cầu thực hành trong đề cươ
 *   **Học tập cùng Trợ lý AI (RAG chatbot):**
     *   Trong quá trình học, học viên mở khung chat với Trợ lý AI.
     *   Đặt câu hỏi thắc mắc. AI sẽ truy xuất thông tin từ cơ sở tri thức (học liệu do Giảng viên upload ở khóa học đó) để sinh phản hồi chính xác, bám sát nội dung bài học.
-    *   *Giới hạn sử dụng:* Mỗi học viên được phép chat tối đa **50 lượt/ngày** để kiểm soát chi phí gọi LLM.
+    *   *Giới hạn sử dụng:* Mỗi học viên được phép chat tối đa **50 lượt/ngày** (được kiểm soát bằng quota lưu trên Redis, tự động thiết lập lại vào lúc 00:00 mỗi ngày) để kiểm soát chi phí gọi LLM.
     *   *Kiểm soát an toàn (Guardrails):* Câu hỏi và câu trả lời của học viên sẽ đi qua bộ lọc Guardrails của hệ thống để đảm bảo không vi phạm an toàn thông tin và không trả lời lạc đề môn học.
 *   **Yêu cầu giảng viên hỗ trợ:**
     *   Gửi yêu cầu hỗ trợ kèm mô tả lỗi khi gặp bài giảng quá khó hoặc thi trượt.

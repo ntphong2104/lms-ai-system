@@ -204,18 +204,19 @@ sequenceDiagram
     API->>API: Tạo Access Token (JWT, 30 phút)<br/>Tạo Refresh Token (JWT, 7 ngày)
     API-->>User: 200 OK<br/>{access_token, refresh_token}
 
-    Note over User,API: --- Khi Access Token hết hạn ---
+    Note over User,API: --- Khi Access Token hết hạn (Refresh Token Rotation) ---
 
     User->>API: POST /api/v1/auth/refresh<br/>{refresh_token}
-    API->>Redis: Kiểm tra token có bị blacklist không
+    API->>Redis: Kiểm tra old_refresh_token có bị blacklist không
     Redis-->>API: ❌ Không bị blacklist
-    API->>API: Tạo Access Token mới
-    API-->>User: 200 OK — {new_access_token}
+    API->>API: Tạo Access Token mới<br/>Tạo Refresh Token mới
+    API->>Redis: Blacklist old_refresh_token (TTL = thời gian còn lại)
+    API-->>User: 200 OK — {access_token, refresh_token}
 
     Note over User,API: --- Khi Logout ---
 
     User->>API: POST /api/v1/auth/logout
-    API->>Redis: Blacklist refresh_token (TTL = thời gian còn lại)
+    API->>Redis: Blacklist hiện tại refresh_token (TTL = thời gian còn lại)
     API-->>User: 200 OK — Đã đăng xuất
 ```
 
@@ -275,6 +276,8 @@ sequenceDiagram
 | DELETE | `/lessons/{id}` | Teacher (owner) | Xóa bài học |
 | POST | `/courses/{id}/materials` | Teacher (owner) | Upload tài liệu (PDF, SCORM, Video) |
 | GET | `/courses/{id}/materials` | Enrolled | Danh sách tài liệu |
+| POST | `/materials/{id}/retry` | Teacher (owner) | Đẩy lại job xử lý vector hóa tài liệu khi bị lỗi |
+| GET | `/materials/{id}/presigned-url` | Enrolled | Sinh pre-signed URL truy cập an toàn tài liệu từ S3 Private |
 
 #### 🤖 AI Chat (`chat.py`)
 
@@ -307,6 +310,8 @@ sequenceDiagram
 | POST | `/support-requests` | Student | Gửi yêu cầu hỗ trợ |
 | GET | `/support-requests` | Teacher / Student | Danh sách yêu cầu (theo role) |
 | PATCH | `/support-requests/{id}` | Teacher | Cập nhật link Meet + thời gian hẹn |
+| PATCH | `/support-requests/{id}/cancel` | Owner / Teacher | Hủy yêu cầu hỗ trợ |
+| PATCH | `/support-requests/{id}/complete` | Teacher (owner) | Xác nhận đã hỗ trợ xong (ghi chú giải pháp) |
 
 #### 📊 Dashboard & Statistics
 
@@ -349,8 +354,11 @@ graph LR
     RBAC --> HANDLER["⚙️ API Handler"]
 ```
 
-- **Rate Limiting**: Giới hạn request theo IP (chưa login) hoặc User ID (đã login) bằng thuật toán Token Bucket trên Redis
-- **JWT**: Access Token (30 phút) + Refresh Token (7 ngày). Refresh Token bị blacklist khi logout
+- **Rate Limiting & Quota**:
+  - **Rate Limiting (Chống spam)**: Giới hạn số request/phút theo IP (chưa login) hoặc User ID (đã login) bằng thuật toán Token Bucket trên Redis.
+  - **Daily AI Chat Quota (Hạn mức ngày)**: Mỗi học viên được giới hạn 50 lượt chat AI/ngày. Hệ thống sử dụng một bộ đếm (counter) trên Redis có TTL 24 giờ, reset vào 00:00 hằng ngày để kiểm tra quota trước khi gửi request tới LLM.
+- **JWT & Bảo mật phiên**: Access Token (30 phút) + Refresh Token (7 ngày). Sử dụng cơ chế **Refresh Token Rotation (RTR)**: Khi client sử dụng Refresh Token để lấy Access Token mới, hệ thống sẽ sinh ra Refresh Token mới, đồng thời đưa Refresh Token cũ vào blacklist của Redis để tránh việc chiếm đoạt và tái sử dụng token.
+- **Bảo mật tài liệu (Storage Security)**: Mọi tài nguyên học liệu trên MinIO/S3 đều ở chế độ Private. Client không thể truy cập trực tiếp bằng URL tĩnh. Thay vào đó, client phải gọi API lấy **Presigned URL** có thời hạn hiệu lực ngắn (ví dụ: 15-60 phút) để xem hoặc tải về.
 - **RBAC**: Phân quyền theo role, kiểm tra ownership (teacher chỉ sửa khóa học của mình)
 - **Input Validation**: Dùng Pydantic models validate mọi input đầu vào
 - **File Upload Validation**: Kiểm tra MIME type + kích thước: PDF ≤ 10MB, Video ≤ 100MB, SCORM ≤ 30MB

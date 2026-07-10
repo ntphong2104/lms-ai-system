@@ -219,6 +219,12 @@ erDiagram
 
 ## 2. THIẾT KẾ CHI TIẾT CÁC BẢNG SQL (PostgreSQL)
 
+> [!WARNING]
+> **LƯU Ý QUAN TRỌNG VỀ SOFT DELETE VS CASCADE:**
+> Hệ thống sử dụng cơ chế Soft Delete (`deleted_at IS NOT NULL`) cho bảng `users` và `courses`. Do đó, ràng buộc `ON DELETE CASCADE` trên cơ sở dữ liệu sẽ **KHÔNG** tự động kích hoạt khi thực hiện xóa mềm (chỉ chạy khi xóa vật lý `DELETE`).
+> - **Nguyên tắc xử lý:** Tầng ứng dụng (Service/Repository Layer) phải tự đảm bảo việc cập nhật trạng thái hoặc `deleted_at` của các thực thể con phụ thuộc (như `lessons`, `materials`, `course_enrollments`) một cách đồng bộ khi thực hiện xóa mềm thực thể cha.
+> - **Các câu query truy xuất:** Luôn phải lọc thêm điều kiện `deleted_at IS NULL` đối với thực thể cha.
+
 ### 2.1 Bảng `users` — Người dùng
 
 Quản lý tất cả tài khoản trên hệ thống (Admin, Giảng viên, Học viên).
@@ -561,7 +567,6 @@ CREATE TABLE learning_progress (
                     CHECK (status IN ('not_started', 'in_progress', 'completed')),
     progress_pct    DECIMAL(5,2) NOT NULL DEFAULT 0.00,
     time_spent_sec  INTEGER NOT NULL DEFAULT 0,     -- Tổng thời gian học (giây)
-    scorm_data      JSONB,                           -- Dữ liệu SCORM (nếu bài học là SCORM)
     completed_at    TIMESTAMPTZ,
     last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -575,11 +580,42 @@ CREATE INDEX idx_progress_course ON learning_progress(course_id);
 CREATE INDEX idx_progress_student_course ON learning_progress(student_id, course_id);
 ```
 
-| Cột đặc biệt | Mô tả |
-|---|---|
-| `scorm_data` | **JSONB** lưu dữ liệu tương tác SCORM: `cmi.core.lesson_status`, `cmi.core.score.raw`, `cmi.suspend_data`... Gộp chung vào `learning_progress` thay vì tạo bảng riêng — vì SCORM data gắn chặt với tiến độ học và có cấu trúc linh hoạt |
-
 > **Mối quan hệ với `course_enrollments.progress_pct`**: Khi `learning_progress` được cập nhật, hệ thống tính lại `progress_pct` tổng hợp trong `course_enrollments` = (số lessons completed / tổng lessons) × 100%.
+
+---
+
+### BẢNG MỚI: `scorm_attempts` — Lịch sử lượt học SCORM
+
+Lưu lại lịch sử tương tác chi tiết cho từng lượt học (attempt) SCORM của học viên để hỗ trợ tính năng học lại (Retake) mà không làm mất lịch sử cũ.
+
+```sql
+CREATE TABLE scorm_attempts (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    lesson_id       UUID NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+    attempt_number  INTEGER NOT NULL DEFAULT 1,
+    status          VARCHAR(20) NOT NULL DEFAULT 'incomplete'
+                    CHECK (status IN ('incomplete', 'completed', 'passed', 'failed')),
+    score_raw       DECIMAL(5,2),                    -- Điểm số thô đạt được
+    suspend_data    TEXT,                            -- suspend_data để khôi phục trạng thái SCORM
+    scorm_data      JSONB,                           -- Toàn bộ data tracking chuẩn SCORM khác (cmi.core...)
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(student_id, lesson_id, attempt_number)
+);
+
+CREATE INDEX idx_scorm_attempts_student_lesson ON scorm_attempts(student_id, lesson_id);
+```
+
+| Cột | Mô tả |
+|-----|-------|
+| `attempt_number` | Lượt học thứ mấy của học viên (1, 2, 3...) |
+| `scorm_data` | JSONB lưu trữ dữ liệu SCORM chi tiết: `cmi.core.lesson_location`, `cmi.core.session_time`... |
+| `status` | Trạng thái lượt học hiện tại của gói SCORM. |
+
+> **Quy tắc đồng bộ tiến độ:** Khi một lượt học SCORM trong `scorm_attempts` chuyển sang trạng thái `completed` hoặc `passed`, hệ thống sẽ tự động cập nhật bản ghi tương ứng trong `learning_progress` của bài học đó thành `completed`.
 
 ---
 
@@ -763,10 +799,11 @@ LIMIT 5;                                      -- Top 5 chunks liên quan nhất
 
 ## 4. CẤU TRÚC DỮ LIỆU REDIS
 
-Redis phục vụ 3 mục đích chính trong hệ thống:
+Redis phục vụ 4 mục đích chính trong hệ thống:
 
-### 4.1 Rate Limiting (Token Bucket)
+### 4.1 Rate Limiting (Token Bucket) & Daily Quota
 
+#### A. Rate Limiting (Chống spam)
 ```
 Key:    rate_limit:user:{user_id}
 Type:   String (counter)
@@ -779,12 +816,20 @@ TTL:    60 seconds
 Value:  Số request còn lại (cho endpoint public)
 ```
 
-### 4.2 JWT Blacklist (Logout)
+#### B. Daily AI Chat Quota (Giới hạn lượt chat AI theo ngày)
+```
+Key:    quota:ai:user:{user_id}:{YYYY-MM-DD}
+Type:   String (counter)
+TTL:    86400 seconds (24h - tự động hết hạn sau 1 ngày)
+Value:  Số lượt chat đã thực hiện (tối đa 50)
+```
+
+### 4.2 JWT Blacklist (Logout & Refresh Token Rotation)
 
 ```
 Key:    blacklist:token:{jti}
 Type:   String
-TTL:    = Thời gian còn lại của Refresh Token
+TTL:    = Thời gian còn lại của token (Access hoặc Refresh Token cũ sau khi xoay vòng)
 Value:  "1" (chỉ cần tồn tại là đủ)
 ```
 
@@ -864,14 +909,15 @@ backend/
 | 10 | `quiz_questions` | 8 | → quizzes | Câu hỏi trắc nghiệm |
 | 11 | `quiz_attempts` | 9 | → quizzes, users | Lượt làm bài |
 | 12 | `quiz_answers` | 5 | → attempts, questions | Câu trả lời |
-| 13 | `learning_progress` | 10 | → users, lessons, courses | Tiến độ |
+| 13 | `learning_progress` | 9 | → users, lessons, courses | Tiến độ (không lưu SCORM data) |
 | 14 | `support_requests` | 11 | → users (×2), courses | Hỗ trợ Google Meet |
 | 15 | `badges` | 7 | → courses | Huy hiệu |
 | 16 | `user_badges` | 6 | → users, badges | Huy hiệu đã cấp |
 | 17 | `system_configs` | 7 | → users | Cấu hình runtime |
 | 18 | `notifications` | 9 | → users | Thông báo real-time |
+| 19 | `scorm_attempts` | 11 | → users, lessons | Lịch sử tương tác SCORM |
 
-**Tổng: 18 bảng SQL + 1 Vector DB collection + 4 Redis key patterns**
+**Tổng: 19 bảng SQL + 1 Vector DB collection + 5 Redis key patterns**
 
 ---
 
