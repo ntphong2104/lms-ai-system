@@ -8,46 +8,35 @@
 
 ## 1. SƠ ĐỒ QUAN HỆ TỔNG QUAN (ER Diagram)
 
+> Chia thành **3 nhóm** để dễ đọc. Mỗi sơ đồ tập trung vào 1 nhóm chức năng.
+
+### 1.1 Nhóm: Quản lý Khóa học & Học tập
+
 ```mermaid
 erDiagram
-    users ||--o{ course_enrollments : "đăng ký"
     users ||--o{ courses : "tạo (teacher)"
-    users ||--o{ conversations : "tham gia chat"
-    users ||--o{ quiz_attempts : "làm bài"
-    users ||--o{ user_badges : "nhận huy hiệu"
-    users ||--o{ support_requests : "gửi/nhận hỗ trợ"
-    users ||--o{ learning_progress : "tiến độ"
-
     categories ||--o{ courses : "phân loại"
-
-    courses ||--o{ course_enrollments : "chứa học viên"
-    courses ||--o{ lessons : "gồm bài học"
-    courses ||--o{ materials : "chứa tài liệu"
-    courses ||--o{ quizzes : "có bài thi"
-    courses ||--o{ conversations : "thuộc khóa học"
-    courses ||--o{ badges : "cấp huy hiệu"
-
+    courses ||--o{ lessons : "gồm"
+    courses ||--o{ materials : "chứa"
+    courses ||--o{ course_enrollments : "ghi danh"
+    users ||--o{ course_enrollments : "đăng ký"
     lessons ||--o{ learning_progress : "theo dõi"
-
-    materials ||--o{ document_chunks : "vector hóa"
-
-    conversations ||--o{ messages : "gồm tin nhắn"
-
-    quizzes ||--o{ quiz_questions : "chứa câu hỏi"
-    quizzes ||--o{ quiz_attempts : "lượt làm"
-
-    quiz_attempts ||--o{ quiz_answers : "câu trả lời"
-    quiz_questions ||--o{ quiz_answers : "được trả lời"
-
-    badges ||--o{ user_badges : "được cấp"
+    users ||--o{ learning_progress : "tiến độ"
 
     users {
         uuid id PK
         string email UK
         string full_name
-        string password_hash
-        enum role
-        enum status
+        enum role "admin | teacher | student"
+        enum status "active | inactive | banned"
+        timestamp deleted_at "Soft Delete"
+    }
+
+    categories {
+        uuid id PK
+        string name
+        string slug UK
+        uuid parent_id FK "Self-ref (lồng nhau)"
     }
 
     courses {
@@ -55,29 +44,174 @@ erDiagram
         uuid teacher_id FK
         uuid category_id FK
         string title
-        text description
-        enum status
+        enum status "draft | published | archived"
+        timestamp deleted_at "Soft Delete"
+    }
+
+    lessons {
+        uuid id PK
+        uuid course_id FK
+        string title
+        int sort_order
     }
 
     materials {
         uuid id PK
         uuid course_id FK
-        enum type
+        enum type "pdf | video | scorm | text"
         string file_url
-        enum processing_status
+        enum processing_status "pending | processing | ready | failed"
     }
+
+    course_enrollments {
+        uuid id PK
+        uuid course_id FK
+        uuid student_id FK
+        decimal progress_pct
+        enum status "active | completed | dropped"
+    }
+
+    learning_progress {
+        uuid id PK
+        uuid student_id FK
+        uuid lesson_id FK
+        enum status "not_started | in_progress | completed"
+        jsonb scorm_data "Dữ liệu SCORM (optional)"
+    }
+```
+
+---
+
+### 1.2 Nhóm: AI Chat & Thi cử
+
+```mermaid
+erDiagram
+    users ||--o{ conversations : "chat"
+    courses ||--o{ conversations : "thuộc"
+    conversations ||--o{ messages : "chứa"
+
+    courses ||--o{ quizzes : "có"
+    quizzes ||--o{ quiz_questions : "gồm"
+    quizzes ||--o{ quiz_attempts : "lượt làm"
+    users ||--o{ quiz_attempts : "nộp bài"
+    quiz_attempts ||--o{ quiz_answers : "trả lời"
+    quiz_questions ||--o{ quiz_answers : "được trả lời"
+
+    materials ||--o{ document_chunks : "vector hóa"
 
     conversations {
         uuid id PK
         uuid user_id FK
         uuid course_id FK
+        string title
     }
 
     messages {
         uuid id PK
         uuid conversation_id FK
-        enum role
+        enum role "user | assistant | system"
         text content
+        int tokens_used
+        jsonb context_chunks "RAG chunks đã dùng"
+    }
+
+    quizzes {
+        uuid id PK
+        uuid course_id FK
+        string title
+        int time_limit_min
+        decimal pass_score
+    }
+
+    quiz_questions {
+        uuid id PK
+        uuid quiz_id FK
+        text content
+        jsonb options "Mảng đáp án A B C D"
+        string correct_key
+    }
+
+    quiz_attempts {
+        uuid id PK
+        uuid quiz_id FK
+        uuid student_id FK
+        decimal score
+        enum status "in_progress | submitted | timed_out"
+    }
+
+    quiz_answers {
+        uuid id PK
+        uuid attempt_id FK
+        uuid question_id FK
+        string selected_key
+        boolean is_correct
+    }
+
+    document_chunks {
+        string vector_id PK
+        uuid course_id "Filter"
+        uuid material_id "Nguồn gốc"
+        text chunk_text
+        float similarity_score
+    }
+```
+
+---
+
+### 1.3 Nhóm: Hỗ trợ, Huy hiệu & Hệ thống
+
+```mermaid
+erDiagram
+    users ||--o{ support_requests : "gửi (student)"
+    users ||--o{ support_requests : "nhận (teacher)"
+    courses ||--o{ support_requests : "thuộc"
+
+    courses ||--o{ badges : "cấp"
+    badges ||--o{ user_badges : "được cấp"
+    users ||--o{ user_badges : "nhận"
+
+    users ||--o{ notifications : "nhận"
+
+    support_requests {
+        uuid id PK
+        uuid student_id FK
+        uuid teacher_id FK
+        string subject
+        enum status "pending | scheduled | completed | cancelled"
+        string meet_link
+        timestamp scheduled_at
+    }
+
+    badges {
+        uuid id PK
+        uuid course_id FK
+        string name
+        string image_url
+        jsonb criteria "Điều kiện cấp"
+    }
+
+    user_badges {
+        uuid id PK
+        uuid user_id FK
+        uuid badge_id FK
+        string verification_id UK
+        string public_url "Chia sẻ LinkedIn"
+    }
+
+    notifications {
+        uuid id PK
+        uuid user_id FK
+        enum type "meet | badge | quiz | system"
+        string title
+        jsonb data "Payload liên kết"
+        boolean is_read
+    }
+
+    system_configs {
+        uuid id PK
+        string key UK
+        text value
+        boolean is_secret
     }
 ```
 
