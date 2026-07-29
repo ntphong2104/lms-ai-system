@@ -1,0 +1,25 @@
+name: Backend CI
+
+on: [push, pull_request] # Tự động chạy mỗi khi có code mới đẩy lên
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install ruff pytest
+          pip install -r backend/requirements.txt
+
+      - name: Check code format with Ruff
+        run: ruff check backend/
+
+      - name: Run tests
+        run: pytest backend/tests/

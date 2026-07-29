@@ -32,3 +32,9 @@ Tuyệt đối tuân thủ cấu trúc phân lớp:
 - Không hardcode API Key. Đọc từ biến môi trường hoặc cấu hình động (`system_configs`).
 - Data Isolation: Bắt buộc truyền `course_id` vào query filter của Vector DB để AI không lấy nhầm kiến thức môn học khác.
 - Xử lý PDF: Tối ưu thư viện bóc tách text từ PDF, đảm bảo phân mảnh (chunking) chuẩn xác, tránh mất ngữ cảnh.
+
+## 6. QUY TẮC ALEMBIC MIGRATION & PROTOBUF (BẮT BUỘC)
+- **KHÔNG tạo migration rỗng**: Nếu `alembic revision --autogenerate` sinh ra file chỉ có `pass` (không có lệnh nào trong `upgrade()`/`downgrade()`), phải XÓA file đó ngay lập tức, KHÔNG ĐƯỢC commit lên Git.
+- **KHÔNG SỬA file migration đã merge vào main**: Migration đã merge là bất biến (immutable). Nếu cần thay đổi schema, PHẢI tạo migration MỚI thay vì sửa file cũ.
+- **KHÔNG khai báo enum/message trong `.proto` mà không sử dụng**: Mọi khai báo trong file `.proto` (enum, message, RPC) phải được tham chiếu bởi ít nhất một message hoặc service khác. Xóa bỏ tất cả khai báo không sử dụng trước khi commit.
+- **KHÔNG commit file rác vào Git**: Các file tạm như `.coverage`, `resolve.py`, `__pycache__/` tuyệt đối không được xuất hiện trong PR. Kiểm tra `.gitignore` và chạy `git status` trước khi commit.

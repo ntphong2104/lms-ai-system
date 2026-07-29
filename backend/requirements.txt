@@ -1,0 +1,10 @@
+# requirements.txt
+# Sentry, SQLAlchemy, Redis, etc. will be populated here
+sentry-sdk[fastapi]
+fastapi
+uvicorn
+sqlalchemy[asyncio]
+asyncpg
+redis
+qdrant-client
+pydantic-settings
